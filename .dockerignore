@@ -1,0 +1,7 @@
+.git
+.venv
+.idea
+videos
+**/tests
+**/__pycache__
+*.pdf

@@ -1,0 +1,36 @@
+services:
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  video_analyzer:
+    build:
+      context: .
+      dockerfile: video_analyzer/Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      VIDEOS_DIR: /videos
+      MAX_BACKLOG: "500"
+    volumes:
+      - ./videos:/videos:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  stream_detector:
+    build:
+      context: .
+      dockerfile: stream_detector/Dockerfile
+    environment:
+      REDIS_URL: redis://redis:6379/0
+    deploy:
+      replicas: 2
+    depends_on:
+      redis:
+        condition: service_healthy
