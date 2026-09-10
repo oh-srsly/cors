@@ -22,7 +22,7 @@ curl -X POST localhost:8000/analyze -H 'content-type: application/json' \
 ## Develop
 
 ```bash
-uv venv -p 3.12 && uv pip install -r requirements-dev.txt
+uv venv && uv pip install -r requirements-dev.txt
 .venv/bin/ruff check . && .venv/bin/pytest
 ```
 
