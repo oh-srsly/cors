@@ -28,12 +28,12 @@ class VideoSource:
         self._encode_params = [cv2.IMWRITE_JPEG_QUALITY, jpeg_quality]
 
     def frames(self, target_fps: int) -> Iterator[Frame]:
-        """Frames sampled by timestamp, so non-integer ratios (25 -> 2) stay accurate."""
+        """Frames sampled by timestamp, so 25 -> 2 fps stays accurate."""
         step = self.fps / target_fps
         sample = 0
         next_wanted = 0
         index = 0
-        # grab() only demuxes; the costly decode in retrieve() runs for selected frames only.
+        # grab() only demuxes; retrieve() decodes selected frames only.
         while self._capture.grab():
             if index >= next_wanted:
                 ok, image = self._capture.retrieve()

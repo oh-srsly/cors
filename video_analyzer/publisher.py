@@ -10,7 +10,7 @@ class BacklogTimeoutError(Exception):
 
 
 class FramePublisher:
-    """Publishes frames to a Redis Stream, blocking while the backlog is above max_backlog."""
+    """Publishes frames to a Redis Stream, blocking while backlog > max_backlog."""
 
     def __init__(
         self,

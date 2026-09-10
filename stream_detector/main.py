@@ -11,16 +11,21 @@ import numpy as np
 import redis
 
 from stream_detector.detector import StreamFaceDetector
-from stream_detector.detector_response_handling import RespObject, send_results_next_service
+from stream_detector.detector_response_handling import (
+    RespObject,
+    send_results_next_service,
+)
 
-logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"), format="%(levelname)s %(message)s")
+logging.basicConfig(
+    level=os.environ.get("LOG_LEVEL", "INFO"), format="%(levelname)s %(message)s"
+)
 log = logging.getLogger("stream_detector")
 
 StreamEntry = tuple[bytes, dict[bytes, bytes]]
 
 
 class FrameConsumer:
-    """One worker in a Redis Streams consumer group. Run several for horizontal scale."""
+    """One worker in a Redis Streams consumer group; run several to scale out."""
 
     def __init__(
         self,
@@ -52,7 +57,9 @@ class FrameConsumer:
 
     def run(self, should_stop: Callable[[], bool]) -> None:
         self.ensure_group()
-        log.info("consumer %s listening on %s/%s", self._consumer, self._stream, self._group)
+        log.info(
+            "consumer %s listening on %s/%s", self._consumer, self._stream, self._group
+        )
         while not should_stop():
             self.process_once()
 
@@ -60,7 +67,9 @@ class FrameConsumer:
         entries = self._claim_stale() or self._read_new()
         if not entries:
             return 0
-        results = [result for entry in entries if (result := self._detect(entry)) is not None]
+        results = [
+            result for entry in entries if (result := self._detect(entry)) is not None
+        ]
         if results:
             send_results_next_service(results)
         ids = [entry_id for entry_id, _ in entries]
@@ -97,7 +106,9 @@ class FrameConsumer:
         try:
             video_id = fields[b"video_id"].decode()
             frame_id = int(fields[b"frame_id"])
-            image = cv2.imdecode(np.frombuffer(fields[b"jpeg"], np.uint8), cv2.IMREAD_COLOR)
+            image = cv2.imdecode(
+                np.frombuffer(fields[b"jpeg"], np.uint8), cv2.IMREAD_COLOR
+            )
         except (KeyError, ValueError, UnicodeDecodeError):
             log.warning("dropping malformed entry %s", entry_id.decode())
             return None
@@ -121,7 +132,9 @@ def main() -> None:
     signal.signal(signal.SIGINT, request_stop)
 
     consumer = FrameConsumer(
-        client=redis.Redis.from_url(os.environ.get("REDIS_URL", "redis://localhost:6379/0")),
+        client=redis.Redis.from_url(
+            os.environ.get("REDIS_URL", "redis://localhost:6379/0")
+        ),
         detector=StreamFaceDetector(),
         stream=os.environ.get("FRAMES_STREAM", "frames"),
         group=os.environ.get("CONSUMER_GROUP", "detectors"),

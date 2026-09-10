@@ -28,7 +28,9 @@ def client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> TestClient:
     return TestClient(main.app)
 
 
-def test_happy_path(client: TestClient, publisher: RecordingPublisher, video_path: Path) -> None:
+def test_happy_path(
+    client: TestClient, publisher: RecordingPublisher, video_path: Path
+) -> None:
     response = client.post("/analyze", json={"file_path": video_path.name, "fps": 2})
     assert response.status_code == 200
     assert response.json() == {
@@ -37,7 +39,12 @@ def test_happy_path(client: TestClient, publisher: RecordingPublisher, video_pat
         "fps": 2,
         "frames_dispatched": 4,
     }
-    assert publisher.published == [("clip", 0), ("clip", 12), ("clip", 25), ("clip", 37)]
+    assert publisher.published == [
+        ("clip", 0),
+        ("clip", 12),
+        ("clip", 25),
+        ("clip", 37),
+    ]
 
 
 @pytest.mark.parametrize("fps", [1, 3, 30, "2", 2.0, True, None])
@@ -49,17 +56,25 @@ def test_rejects_fps_other_than_2_or_4(
     assert publisher.published == []
 
 
-def test_rejects_unknown_fields(client: TestClient, publisher: RecordingPublisher) -> None:
-    response = client.post("/analyze", json={"file_path": "clip.avi", "fps": 2, "extra": 1})
+def test_rejects_unknown_fields(
+    client: TestClient, publisher: RecordingPublisher
+) -> None:
+    response = client.post(
+        "/analyze", json={"file_path": "clip.avi", "fps": 2, "extra": 1}
+    )
     assert response.status_code == 422
 
 
-def test_missing_video_is_404(client: TestClient, publisher: RecordingPublisher) -> None:
+def test_missing_video_is_404(
+    client: TestClient, publisher: RecordingPublisher
+) -> None:
     response = client.post("/analyze", json={"file_path": "nope.mp4", "fps": 2})
     assert response.status_code == 404
 
 
-def test_path_outside_videos_dir_is_400(client: TestClient, publisher: RecordingPublisher) -> None:
+def test_path_outside_videos_dir_is_400(
+    client: TestClient, publisher: RecordingPublisher
+) -> None:
     response = client.post("/analyze", json={"file_path": "../../etc/passwd", "fps": 2})
     assert response.status_code == 400
     assert publisher.published == []

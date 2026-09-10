@@ -23,7 +23,9 @@ def sent(monkeypatch: pytest.MonkeyPatch) -> list[list[RespObject]]:
     return batches
 
 
-def make_consumer(client: fakeredis.FakeRedis, name: str = "worker-1") -> main.FrameConsumer:
+def make_consumer(
+    client: fakeredis.FakeRedis, name: str = "worker-1"
+) -> main.FrameConsumer:
     consumer = main.FrameConsumer(
         client, StreamFaceDetector(), STREAM, GROUP, name, batch_size=8, block_ms=1
     )
@@ -37,10 +39,14 @@ def jpeg_bytes() -> bytes:
     return buffer.tobytes()
 
 
-def test_detects_and_acks_batch(client: fakeredis.FakeRedis, sent: list[list[RespObject]]) -> None:
+def test_detects_and_acks_batch(
+    client: fakeredis.FakeRedis, sent: list[list[RespObject]]
+) -> None:
     consumer = make_consumer(client)
     for frame_id in (0, 12, 25):
-        client.xadd(STREAM, {"video_id": "clip", "frame_id": frame_id, "jpeg": jpeg_bytes()})
+        client.xadd(
+            STREAM, {"video_id": "clip", "frame_id": frame_id, "jpeg": jpeg_bytes()}
+        )
 
     assert consumer.process_once() == 3
 
@@ -86,7 +92,13 @@ def test_stale_pending_entries_are_reclaimed(
     assert client.xpending(STREAM, GROUP)["pending"] == 1
 
     survivor = main.FrameConsumer(
-        client, StreamFaceDetector(), STREAM, GROUP, "survivor", block_ms=1, claim_idle_ms=0
+        client,
+        StreamFaceDetector(),
+        STREAM,
+        GROUP,
+        "survivor",
+        block_ms=1,
+        claim_idle_ms=0,
     )
     assert survivor.process_once() == 1
 
