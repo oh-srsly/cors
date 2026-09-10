@@ -2,6 +2,7 @@ import os
 import time
 
 import redis
+from prometheus_client import Counter
 
 from video_analyzer.frames import Frame
 
@@ -9,6 +10,10 @@ STREAM = "frames"
 MAX_BACKLOG = int(os.environ.get("MAX_BACKLOG", "500"))
 MAX_WAIT_SECONDS = 60
 POLL_SECONDS = 0.05
+
+BACKLOG_WAIT_SECONDS = Counter(
+    "backlog_wait_seconds_total", "Time spent waiting on backlog"
+)
 
 
 def publish(client: redis.Redis, video_id: str, frame: Frame) -> None:
@@ -28,4 +33,5 @@ def wait_for_capacity(client: redis.Redis) -> None:
         if client.xlen(STREAM) < MAX_BACKLOG:
             return
         time.sleep(POLL_SECONDS)
+        BACKLOG_WAIT_SECONDS.inc(POLL_SECONDS)
     raise TimeoutError(f"backlog stayed above {MAX_BACKLOG} for {MAX_WAIT_SECONDS}s")

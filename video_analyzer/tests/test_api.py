@@ -105,3 +105,27 @@ def test_unreadable_video_is_400(
     (tmp_path / "bogus.mp4").write_bytes(b"not a video")
     response = client.post("/analyze", json={"file_path": "bogus.mp4", "fps": 4})
     assert response.status_code == 400
+
+
+def test_health_ok(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    import fakeredis
+
+    monkeypatch.setattr(main, "redis_client", fakeredis.FakeRedis())
+    assert client.get("/health").status_code == 200
+
+
+def test_health_reports_redis_down(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class Down:
+        def ping(self) -> None:
+            raise redis.ConnectionError("nope")
+
+    monkeypatch.setattr(main, "redis_client", Down())
+    assert client.get("/health").status_code == 503
+
+
+def test_metrics_exposed(client: TestClient) -> None:
+    response = client.get("/metrics")
+    assert response.status_code == 200
+    assert "frames_dispatched_total" in response.text

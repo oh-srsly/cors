@@ -6,6 +6,8 @@ from uuid import uuid4
 
 import redis
 from fastapi import FastAPI, HTTPException, status
+from fastapi.responses import JSONResponse, Response
+from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from redis.backoff import ExponentialBackoff
 from redis.retry import Retry
@@ -21,6 +23,9 @@ REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 
 app = FastAPI(title="VideoAnalyzer")
 redis_client = redis.Redis.from_url(REDIS_URL, retry=Retry(ExponentialBackoff(), 3))
+
+REQUEST_SECONDS = Histogram("analyze_request_seconds", "POST /analyze latency")
+FRAMES_DISPATCHED = Counter("frames_dispatched_total", "Frames published to the stream")
 
 
 class AnalyzeRequest(BaseModel):
@@ -63,16 +68,33 @@ def dispatch_failed(error: str, video_id: str, dispatched: int) -> HTTPException
     return HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail)
 
 
+@app.get("/metrics")
+def metrics() -> Response:
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+
+@app.get("/health")
+def health() -> JSONResponse:
+    try:
+        redis_client.ping()
+    except redis.RedisError:
+        return JSONResponse(
+            {"status": "redis unreachable"}, status.HTTP_503_SERVICE_UNAVAILABLE
+        )
+    return JSONResponse({"status": "ok"})
+
+
 @app.post("/analyze")
 def analyze(request: AnalyzeRequest) -> AnalyzeResponse:
     path = resolve_video_path(request.file_path)
     video_id = f"{path.stem}-{uuid4().hex}"
     dispatched = 0
     try:
-        with closing(iter_frames(path, request.fps)) as frames:
+        with REQUEST_SECONDS.time(), closing(iter_frames(path, request.fps)) as frames:
             for frame in frames:
                 publish(redis_client, video_id, frame)
                 dispatched += 1
+                FRAMES_DISPATCHED.inc()
     except UnreadableVideoError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
     except TimeoutError as exc:

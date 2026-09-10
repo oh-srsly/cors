@@ -146,3 +146,10 @@ def test_stale_pending_entries_are_reclaimed(
     assert [r.frame_id for r in sent] == [7]
     assert client.xpending(STREAM, GROUP)["pending"] == 0
     assert client.xlen(STREAM) == 0
+
+
+def test_make_detector_rejects_unknown() -> None:
+    from stream_detector.detector import make_detector
+
+    with pytest.raises(ValueError):
+        make_detector("yolo")

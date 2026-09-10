@@ -8,10 +8,11 @@ from types import FrameType
 import cv2
 import numpy as np
 import redis
+from prometheus_client import Counter, Gauge, Histogram, start_http_server
 from redis.backoff import ExponentialBackoff
 from redis.retry import Retry
 
-from stream_detector.detector import StreamFaceDetector
+from stream_detector.detector import StreamFaceDetector, make_detector
 from stream_detector.detector_response_handling import (
     RespObject,
     send_results_next_service,
@@ -27,6 +28,16 @@ CLAIM_IDLE_MS = (
     60_000  # entries are read one at a time, so this bounds one detect + send
 )
 RETRY_SECONDS = 2
+METRICS_PORT = 9100
+STATS_INTERVAL_SECONDS = 1
+
+FRAMES_PROCESSED = Counter("frames_processed_total", "Frames detected and forwarded")
+FRAMES_DROPPED = Counter(
+    "frames_dropped_total", "Frames dropped after a per-entry failure"
+)
+DETECT_SECONDS = Histogram("detect_seconds", "detect_faces latency")
+STREAM_LAG = Gauge("stream_lag", "Entries not yet delivered to the consumer group")
+STREAM_PENDING = Gauge("stream_pending", "Entries delivered but not yet acked")
 
 StreamEntry = tuple[bytes, dict[bytes, bytes]]
 
@@ -40,6 +51,7 @@ class FrameConsumer:
         self._consumer = consumer
         self._stopping = False
         self._next_claim_at = 0.0
+        self._next_stats_at = 0.0
 
     def ensure_group(self) -> None:
         try:
@@ -62,6 +74,7 @@ class FrameConsumer:
                 time.sleep(RETRY_SECONDS)
 
     def process_once(self) -> int:
+        self._sample_stream_stats()
         entries = self._claim_stale() or self._read_new()
         for entry_id, fields in entries:
             self._handle(entry_id, fields)
@@ -87,7 +100,18 @@ class FrameConsumer:
         )
         return response[1]
 
+    def _sample_stream_stats(self) -> None:
+        now = time.monotonic()
+        if now < self._next_stats_at:
+            return
+        self._next_stats_at = now + STATS_INTERVAL_SECONDS
+        for group in self._client.xinfo_groups(STREAM):
+            if group["name"] == GROUP.encode():
+                STREAM_PENDING.set(group["pending"])
+                STREAM_LAG.set(max(group["lag"] or 0, 0))
+
     def _handle(self, entry_id: bytes, fields: dict[bytes, bytes]) -> None:
+        video_id = frame_id = None
         try:
             video_id = fields[b"video_id"].decode()
             frame_id = int(fields[b"frame_id"])
@@ -96,12 +120,23 @@ class FrameConsumer:
             )
             if image is None:
                 raise ValueError("undecodable jpeg")
-            faces = self._detector.detect_faces(image)
+            with DETECT_SECONDS.time():
+                faces = self._detector.detect_faces(image)
             send_results_next_service(
                 [RespObject(faces=faces, video_id=video_id, frame_id=frame_id)]
             )
+            FRAMES_PROCESSED.inc()
+            log.debug(
+                "faces=%d video_id=%s frame_id=%s", len(faces), video_id, frame_id
+            )
         except Exception:
-            log.exception("dropping entry=%s", entry_id.decode())
+            FRAMES_DROPPED.inc()
+            log.exception(
+                "dropping entry=%s video_id=%s frame_id=%s",
+                entry_id.decode(),
+                video_id,
+                frame_id,
+            )
 
     def _request_stop(self, signum: int, _frame: FrameType | None) -> None:
         self._stopping = True
@@ -113,7 +148,9 @@ def main() -> None:
         socket_timeout=BLOCK_MS / 1000 + 1,
         retry=Retry(ExponentialBackoff(), 3),
     )
-    FrameConsumer(client, StreamFaceDetector(), socket.gethostname()).run()
+    detector = make_detector(os.environ.get("DETECTOR", "mock"))
+    start_http_server(METRICS_PORT)
+    FrameConsumer(client, detector, socket.gethostname()).run()
 
 
 if __name__ == "__main__":
