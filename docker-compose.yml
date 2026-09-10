@@ -5,9 +5,11 @@ services:
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8222/healthz"]
-      interval: 2s
+      interval: 30s
+      start_period: 10s
+      start_interval: 1s
       timeout: 2s
-      retries: 15
+      retries: 3
 
   video_analyzer:
     build:
