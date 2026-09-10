@@ -63,7 +63,18 @@ Frames are sampled by index against the container's nominal frame rate (25 fps a
 
 Prometheus metrics: the analyzer at `:8000/metrics` (frames dispatched), each detector at `:9100/metrics` inside the compose network (frames processed and dropped, detection latency histogram). Queue depth and in-flight count come from NATS at `:8222/jsz?consumers=true`; that number is what an autoscaler should act on.
 
-Measured on the sample videos (720p and 540p, 2 fps): extraction costs the analyzer about 1.5% of one core per second of video; the Haar detector costs 40 to 60 ms per frame, so one real-time video needs about 10% of a detector core, and a 12-core host saturates near 100 concurrent real-time videos before the queue starts refusing. The mock detector is dominated by JPEG decode at about 1 ms per frame.
+Capacity, measured on the sample videos (720p and 540p, 2 fps) on a 12-core laptop:
+
+| Quantity | Number | Basis |
+|---|---|---|
+| Frame size on the queue | 80 to 140 KB | JPEG quality 75, 720p and 540p; content-dependent |
+| Queue storage at a full backlog | about 50 MB | 500 frames x 100 KB, file-backed in the NATS container |
+| Analyzer cost | 1.5% of a core per second of video | grab every source frame at 0.5 ms, encode 2 of them at 1.4 ms |
+| Mock detector throughput | about 600 frames/s per worker | JPEG decode 1.2 ms plus 0.4 ms of queue round trips |
+| Haar detector cost | 130 ms of CPU per 720p frame | single-threaded; a worker with 12 threads does 20 to 25 frames/s |
+| Queue round trips per frame | 3 | publish, fetch, ack; about 1 ms total on a LAN |
+
+Sizing for 100 concurrent videos at 2 fps, which is 200 frames/s: the analyzer needs about 1.5 cores and holds 100 open requests, which it does on one event loop. The Haar detector needs about 26 cores (200 frames/s x 130 ms), so 13 two-core workers or 26 single-core ones; a real model replaces the 130 ms with its own per-frame cost and the arithmetic stays. The queue moves 20 MB/s, which is nothing for NATS, but `MAX_BACKLOG` of 500 is only 2.5 seconds of buffer at that rate; set it to a few thousand (a few hundred MB) so a short detector stall does not turn into refused publishes. At on-demand cloud prices of roughly $0.04 per vCPU-hour, 28 cores is about $1.10 per hour, or $800 a month for 100 always-on streams, before the real model.
 
 What fails and what happens:
 
