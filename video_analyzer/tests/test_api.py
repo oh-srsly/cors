@@ -1,3 +1,4 @@
+from collections.abc import Iterable
 from pathlib import Path
 
 import pytest
@@ -11,8 +12,10 @@ class RecordingPublisher:
     def __init__(self) -> None:
         self.published: list[tuple[str, int]] = []
 
-    def publish(self, video_id: str, frame: Frame) -> None:
-        self.published.append((video_id, frame.index))
+    def publish(self, video_id: str, frames: Iterable[Frame]) -> int:
+        before = len(self.published)
+        self.published.extend((video_id, frame.index) for frame in frames)
+        return len(self.published) - before
 
 
 @pytest.fixture
@@ -33,18 +36,20 @@ def test_happy_path(
 ) -> None:
     response = client.post("/analyze", json={"file_path": video_path.name, "fps": 2})
     assert response.status_code == 200
-    assert response.json() == {
-        "video_id": "clip",
-        "source_fps": 25.0,
-        "fps": 2,
-        "frames_dispatched": 4,
-    }
-    assert publisher.published == [
-        ("clip", 0),
-        ("clip", 12),
-        ("clip", 25),
-        ("clip", 37),
-    ]
+    body = response.json()
+    assert body["video_id"].startswith("clip-")
+    assert body["frames_dispatched"] == 4
+    assert [i for _, i in publisher.published] == [0, 13, 25, 38]
+    assert {v for v, _ in publisher.published} == {body["video_id"]}
+
+
+def test_each_request_gets_its_own_video_id(
+    client: TestClient, publisher: RecordingPublisher, video_path: Path
+) -> None:
+    body = {"file_path": video_path.name, "fps": 2}
+    first = client.post("/analyze", json=body).json()["video_id"]
+    second = client.post("/analyze", json=body).json()["video_id"]
+    assert first != second
 
 
 @pytest.mark.parametrize("fps", [1, 3, 30, "2", 2.0, True, None])
@@ -72,10 +77,11 @@ def test_missing_video_is_404(
     assert response.status_code == 404
 
 
-def test_path_outside_videos_dir_is_400(
-    client: TestClient, publisher: RecordingPublisher
+@pytest.mark.parametrize("file_path", ["../../etc/passwd", "a\x00b", "x" * 5000])
+def test_bad_paths_are_400(
+    client: TestClient, publisher: RecordingPublisher, file_path: str
 ) -> None:
-    response = client.post("/analyze", json={"file_path": "../../etc/passwd", "fps": 2})
+    response = client.post("/analyze", json={"file_path": file_path, "fps": 2})
     assert response.status_code == 400
     assert publisher.published == []
 

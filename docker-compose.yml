@@ -1,6 +1,7 @@
 services:
   redis:
     image: redis:7-alpine
+    restart: unless-stopped
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 2s
@@ -11,12 +12,12 @@ services:
     build:
       context: .
       dockerfile: video_analyzer/Dockerfile
+    restart: unless-stopped
     ports:
       - "8000:8000"
     environment:
       REDIS_URL: redis://redis:6379/0
       VIDEOS_DIR: /videos
-      MAX_BACKLOG: "500"
     volumes:
       - ./videos:/videos:ro
     depends_on:
@@ -27,6 +28,7 @@ services:
     build:
       context: .
       dockerfile: stream_detector/Dockerfile
+    restart: unless-stopped
     environment:
       REDIS_URL: redis://redis:6379/0
     deploy:
