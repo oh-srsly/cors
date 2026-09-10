@@ -81,25 +81,3 @@ What fails and what happens:
 | `MAX_BACKLOG` changed between deploys | stream updated in place at analyzer start | none needed |
 
 Limits, on purpose: results are at-least-once (a killed worker causes one redelivery); the consumer's `ack_wait` is fixed when the durable consumer is first created, so changing it means deleting the consumer; the analyzer holds one request open for the whole extraction, which is what the brief's 200-after-dispatch contract requires.
-
-## Stage 2: production shape
-
-For hundreds of concurrent videos the analyzer stops decoding inline. `POST /analyze` validates, writes a job row, publishes a job message, and returns 202 with a job id; a pool of extractors pulls jobs, reads video from object storage, and publishes frames; detectors are unchanged. Extraction and detection then scale independently, and the HTTP tier holds no long requests.
-
-```mermaid
-flowchart LR
-    C[client] -- 202 + job id --> API[api]
-    API --> DB[(job store)]
-    API -- job --> J[(stream jobs)]
-    J --> E[extractors, autoscaled]
-    OS[(object storage)] --> E
-    E -- frames --> F[(stream frames, R3)]
-    F --> D[detectors, autoscaled on num_pending]
-    D --> R[(results)]
-    D -- progress --> DB
-    D -. failed frame + error .-> DLQ[(stream frames.dead)]
-```
-
-Availability and fault tolerance: NATS runs as a three-node cluster with streams at replication 3, so a node loss loses no accepted frame. Workers are stateless and restart freely; anything unacked is redelivered. A frame that fails is published with its error to a `frames.dead` stream before it is terminated, so the dead-letter path is one publish in the detector rather than a consumer of JetStream's `MAX_DELIVERIES` advisory, which only stops redelivery and leaves the message in place. Backpressure stays server-side: a full `frames` stream refuses extractors, a full `jobs` stream returns 429 to clients. Detectors autoscale on consumer `num_pending`, extractors on `jobs` depth. The job store records frames dispatched, processed, and dropped per video, so clients poll progress and a job that fails is retried at the video level, which is cheaper than making frame delivery exactly-once.
-
-What changes in the detector for real inference: batch frames per model call (GPU inference is 5 to 20 times more efficient batched), size `ack_wait` to batch size times worst-case latency, and pin OpenCV and the model to one thread per process so replicas equal cores instead of oversubscribing.
