@@ -19,7 +19,11 @@ curl -X POST localhost:8000/analyze -H 'content-type: application/json' \
      -d '{"file_path": "G20_Summit.mp4", "fps": 2}'
 ```
 
-The sample video is not in the repository (it is over GitHub's file limit); place it in `videos/`, which is mounted read-only into the analyzer. `DETECTOR=haar docker compose up --build` replaces the provided mock with OpenCV's Haar cascade so the demo shows real boxes and real per-frame latency. Scale detectors with `--scale stream_detector=4`.
+The sample video is not in the repository (it is over GitHub's file limit); place it in `videos/`, which is mounted read-only into the analyzer. Scale detectors with `--scale stream_detector=4`.
+
+The detector is the provided mock by default. `DETECTOR=haar docker compose up --build` swaps in OpenCV's Haar frontal-face cascade, which ships inside the OpenCV wheel, so the demo shows real boxes and real per-frame latency without a model download. It is a stand-in, not a recommendation: on this sample frame it finds the three frontal faces and misses the two in profile.
+
+![Haar cascade output on a sampled frame](docs/haar-example.jpg)
 
 Tests need no broker:
 
