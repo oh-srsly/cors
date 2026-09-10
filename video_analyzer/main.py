@@ -28,7 +28,10 @@ FRAMES_DISPATCHED = Counter("frames_dispatched_total", "Frames published to the 
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     nc = await nats.connect(NATS_URL)
     app.state.js = nc.jetstream()
-    await app.state.js.add_stream(STREAM)
+    try:
+        await app.state.js.add_stream(STREAM)
+    except nats.js.errors.BadRequestError:  # exists with another MAX_BACKLOG
+        await app.state.js.update_stream(STREAM)
     yield
     await nc.drain()
 

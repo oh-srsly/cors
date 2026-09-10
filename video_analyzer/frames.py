@@ -26,7 +26,7 @@ def iter_frames(path: Path, target_fps: int) -> Iterator[Frame]:
         source_fps = capture.get(cv2.CAP_PROP_FPS)
         if not capture.isOpened() or not source_fps > 0:
             raise UnreadableVideoError(f"cannot read video: {path.name}")
-        step = source_fps / target_fps  # 25 fps -> 2 fps: every 12.5th frame
+        step = source_fps / target_fps
         sample = 0
         index = 0
         # grab() alone tells EOF apart from a frame that fails to decode in retrieve()

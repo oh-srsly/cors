@@ -29,6 +29,7 @@ services:
     build:
       context: .
       dockerfile: stream_detector/Dockerfile
+    init: true
     restart: unless-stopped
     environment:
       NATS_URL: nats://nats:4222

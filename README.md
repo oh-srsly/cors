@@ -19,9 +19,9 @@ curl -X POST localhost:8000/analyze -H 'content-type: application/json' \
 
 `file_path` is relative to the `videos/` directory mounted into the analyzer. Responses: 200 with the `video_id` and dispatched frame count, 422 for a malformed body or an fps other than 2/4, 404 for a missing file, 400 for a bad path or an unreadable video, 503 when the queue is unavailable or stays full.
 
-Prometheus metrics: the analyzer at `:8000/metrics` (frames dispatched), each detector at `:9100/metrics` inside the compose network (frames processed and dropped, detect latency). Queue depth comes from NATS itself (`nats consumer info frames detectors`).
+Prometheus metrics: the analyzer at `:8000/metrics` (frames dispatched), each detector at `:9100/metrics` inside the compose network (frames processed and dropped, detect latency). Queue depth comes from NATS itself at `:8222/jsz?consumers=true` inside the compose network.
 
-Limits, on purpose: frames are sampled by index against the container's nominal frame rate, so variable-frame-rate sources drift; a detector killed mid-frame causes one redelivery, so results are at-least-once.
+Limits, on purpose: frames are sampled by index against the container's nominal frame rate, so variable-frame-rate sources drift; a detector killed mid-frame causes one redelivery, so results are at-least-once; the consumer's `ack_wait` is fixed when the durable is first created, so changing it needs the consumer deleted.
 
 ## Develop
 

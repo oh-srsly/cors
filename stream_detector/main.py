@@ -1,7 +1,6 @@
 import asyncio
 import logging
 import os
-import socket
 
 import cv2
 import nats
@@ -21,9 +20,7 @@ log = logging.getLogger("stream_detector")
 
 SUBJECT = "frames"
 CONSUMER = "detectors"
-ACK_WAIT_SECONDS = (
-    60  # must exceed one detect + send; unacked frames are redelivered after it
-)
+ACK_WAIT_SECONDS = 60  # must exceed one detect + send
 RETRY_SECONDS = 2
 
 FRAMES_PROCESSED = Counter("frames_processed_total", "Frames detected and forwarded")
@@ -59,7 +56,7 @@ async def consume(detector: StreamFaceDetector) -> None:
         sub = await js.pull_subscribe(
             SUBJECT, durable=CONSUMER, config=ConsumerConfig(ack_wait=ACK_WAIT_SECONDS)
         )
-        log.info("consumer=%s listening on %s", socket.gethostname(), SUBJECT)
+        log.info("listening on %s", SUBJECT)
         while True:
             try:
                 msgs = await sub.fetch(1, timeout=1)
