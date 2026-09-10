@@ -26,21 +26,25 @@ def iter_frames(path: Path, target_fps: int) -> Iterator[Frame]:
     try:
         if not capture.isOpened():
             raise UnreadableVideoError(f"cannot open video: {path.name}")
-        source_fps = capture.get(cv2.CAP_PROP_FPS)
-        if not source_fps > 0:
-            raise UnreadableVideoError(f"cannot determine frame rate: {path.name}")
+        source_fps = capture.get(cv2.CAP_PROP_FPS)  # <= 0 for some containers
         interval_ms = 1000 / target_fps
         next_wanted_ms = 0.0
+        previous_ms = 0.0
         index = 0
         # grab() alone tells EOF apart from a frame that fails to decode in retrieve()
         while capture.grab():
-            timestamp_ms = (
-                capture.get(cv2.CAP_PROP_POS_MSEC) or index * 1000 / source_fps
-            )
+            timestamp_ms = capture.get(cv2.CAP_PROP_POS_MSEC)
+            if not timestamp_ms and source_fps > 0:
+                timestamp_ms = index * 1000 / source_fps
+            if timestamp_ms < previous_ms:  # PTS restarted, e.g. concatenated segments
+                next_wanted_ms = timestamp_ms
+            previous_ms = timestamp_ms
             if timestamp_ms >= next_wanted_ms:
                 frame = _encode(capture, index)
                 if frame is None:
-                    log.warning("skipping undecodable frame %d of %s", index, path.name)
+                    log.warning(
+                        "skipping undecodable frame=%d file=%s", index, path.name
+                    )
                 else:
                     yield frame
                 while next_wanted_ms <= timestamp_ms:

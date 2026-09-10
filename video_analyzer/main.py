@@ -1,25 +1,26 @@
 import logging
 import os
+from contextlib import closing
 from pathlib import Path
 from uuid import uuid4
 
 import redis
 from fastapi import FastAPI, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+from redis.backoff import ExponentialBackoff
+from redis.retry import Retry
 
 from video_analyzer.frames import UnreadableVideoError, iter_frames
-from video_analyzer.publisher import FramePublisher
+from video_analyzer.publisher import publish
 
 logging.basicConfig(level="INFO", format="%(levelname)s %(message)s")
 log = logging.getLogger("video_analyzer")
 
 VIDEOS_DIR = Path(os.environ.get("VIDEOS_DIR", "videos")).resolve()
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
-MAX_BACKLOG = int(os.environ.get("MAX_BACKLOG", "500"))
-STREAM = "frames"
 
 app = FastAPI(title="VideoAnalyzer")
-publisher = FramePublisher(redis.Redis.from_url(REDIS_URL), STREAM, MAX_BACKLOG)
+redis_client = redis.Redis.from_url(REDIS_URL, retry=Retry(ExponentialBackoff(), 3))
 
 
 class AnalyzeRequest(BaseModel):
@@ -57,21 +58,30 @@ def resolve_video_path(file_path: str) -> Path:
     return path
 
 
+def dispatch_failed(error: str, video_id: str, dispatched: int) -> HTTPException:
+    detail = {"error": error, "video_id": video_id, "frames_dispatched": dispatched}
+    return HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail)
+
+
 @app.post("/analyze")
 def analyze(request: AnalyzeRequest) -> AnalyzeResponse:
     path = resolve_video_path(request.file_path)
-    video_id = f"{path.stem}-{uuid4().hex[:8]}"
+    video_id = f"{path.stem}-{uuid4().hex}"
+    dispatched = 0
     try:
-        dispatched = publisher.publish(video_id, iter_frames(path, request.fps))
+        with closing(iter_frames(path, request.fps)) as frames:
+            for frame in frames:
+                publish(redis_client, video_id, frame)
+                dispatched += 1
     except UnreadableVideoError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
     except TimeoutError as exc:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
+        raise dispatch_failed(str(exc), video_id, dispatched) from exc
     except redis.RedisError as exc:
-        log.exception("redis failure while dispatching %s", video_id)
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE, "frame queue unavailable"
-        ) from exc
+        log.exception("redis failure video_id=%s frames=%d", video_id, dispatched)
+        raise dispatch_failed("frame queue unavailable", video_id, dispatched) from exc
 
-    log.info("dispatched %d frames of %s at %d fps", dispatched, video_id, request.fps)
+    log.info(
+        "dispatched frames=%d video_id=%s fps=%d", dispatched, video_id, request.fps
+    )
     return AnalyzeResponse(video_id=video_id, frames_dispatched=dispatched)

@@ -1,31 +1,25 @@
 import fakeredis
 import pytest
 
-from video_analyzer import publisher as publisher_module
+from video_analyzer import publisher
 from video_analyzer.frames import Frame
-from video_analyzer.publisher import FramePublisher
+
+FRAME = Frame(index=0, jpeg=b"\xff\xd8")
 
 
-def frames(count: int) -> list[Frame]:
-    return [Frame(index=i, jpeg=b"\xff\xd8") for i in range(count)]
-
-
-def test_publishes_every_frame() -> None:
+def test_publishes_frame_fields() -> None:
     client = fakeredis.FakeRedis()
-    assert (
-        FramePublisher(client, "frames", max_backlog=100).publish("v", frames(3)) == 3
-    )
-    entries = client.xrange("frames")
-    assert [f[b"frame_id"] for _, f in entries] == [b"0", b"1", b"2"]
-    assert all(f[b"video_id"] == b"v" for _, f in entries)
+    publisher.publish(client, "v", Frame(index=13, jpeg=b"\xff\xd8"))
+    [(_, fields)] = client.xrange(publisher.STREAM)
+    assert fields == {b"video_id": b"v", b"frame_id": b"13", b"jpeg": b"\xff\xd8"}
 
 
 def test_full_backlog_times_out(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(publisher_module, "MAX_WAIT_SECONDS", 0.02)
-    monkeypatch.setattr(publisher_module, "POLL_SECONDS", 0.01)
+    monkeypatch.setattr(publisher, "MAX_BACKLOG", 2)
+    monkeypatch.setattr(publisher, "MAX_WAIT_SECONDS", 0.02)
+    monkeypatch.setattr(publisher, "POLL_SECONDS", 0.01)
     client = fakeredis.FakeRedis()
-    publisher = FramePublisher(client, "frames", max_backlog=2)
-    publisher.publish("v", frames(2))
+    publisher.publish(client, "v", FRAME)
     with pytest.raises(TimeoutError):
-        publisher.publish("v", frames(1))
-    assert client.xlen("frames") == 2
+        publisher.publish(client, "v", FRAME)
+    assert client.xlen(publisher.STREAM) == 2

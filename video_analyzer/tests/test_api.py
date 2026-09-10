@@ -1,28 +1,22 @@
-from collections.abc import Iterable
 from pathlib import Path
 
 import pytest
+import redis
 from fastapi.testclient import TestClient
 
 from video_analyzer import main
 from video_analyzer.frames import Frame
 
 
-class RecordingPublisher:
-    def __init__(self) -> None:
-        self.published: list[tuple[str, int]] = []
-
-    def publish(self, video_id: str, frames: Iterable[Frame]) -> int:
-        before = len(self.published)
-        self.published.extend((video_id, frame.index) for frame in frames)
-        return len(self.published) - before
-
-
 @pytest.fixture
-def publisher(monkeypatch: pytest.MonkeyPatch) -> RecordingPublisher:
-    recording = RecordingPublisher()
-    monkeypatch.setattr(main, "publisher", recording)
-    return recording
+def published(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, int]]:
+    records: list[tuple[str, int]] = []
+
+    def fake_publish(client: redis.Redis, video_id: str, frame: Frame) -> None:
+        records.append((video_id, frame.index))
+
+    monkeypatch.setattr(main, "publish", fake_publish)
+    return records
 
 
 @pytest.fixture
@@ -32,19 +26,19 @@ def client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> TestClient:
 
 
 def test_happy_path(
-    client: TestClient, publisher: RecordingPublisher, video_path: Path
+    client: TestClient, published: list[tuple[str, int]], video_path: Path
 ) -> None:
     response = client.post("/analyze", json={"file_path": video_path.name, "fps": 2})
     assert response.status_code == 200
     body = response.json()
     assert body["video_id"].startswith("clip-")
     assert body["frames_dispatched"] == 4
-    assert [i for _, i in publisher.published] == [0, 13, 25, 38]
-    assert {v for v, _ in publisher.published} == {body["video_id"]}
+    assert [i for _, i in published] == [0, 13, 25, 38]
+    assert {v for v, _ in published} == {body["video_id"]}
 
 
 def test_each_request_gets_its_own_video_id(
-    client: TestClient, publisher: RecordingPublisher, video_path: Path
+    client: TestClient, published: list[tuple[str, int]], video_path: Path
 ) -> None:
     body = {"file_path": video_path.name, "fps": 2}
     first = client.post("/analyze", json=body).json()["video_id"]
@@ -52,17 +46,36 @@ def test_each_request_gets_its_own_video_id(
     assert first != second
 
 
+def test_backlog_timeout_reports_partial_dispatch(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, video_path: Path
+) -> None:
+    calls = 0
+
+    def flaky_publish(client: redis.Redis, video_id: str, frame: Frame) -> None:
+        nonlocal calls
+        calls += 1
+        if calls > 2:
+            raise TimeoutError("backlog stayed above 500 for 60s")
+
+    monkeypatch.setattr(main, "publish", flaky_publish)
+    response = client.post("/analyze", json={"file_path": video_path.name, "fps": 2})
+    assert response.status_code == 503
+    detail = response.json()["detail"]
+    assert detail["frames_dispatched"] == 2
+    assert detail["video_id"].startswith("clip-")
+
+
 @pytest.mark.parametrize("fps", [1, 3, 30, "2", 2.0, True, None])
 def test_rejects_fps_other_than_2_or_4(
-    client: TestClient, publisher: RecordingPublisher, fps: object
+    client: TestClient, published: list[tuple[str, int]], fps: object
 ) -> None:
     response = client.post("/analyze", json={"file_path": "clip.avi", "fps": fps})
     assert response.status_code == 422
-    assert publisher.published == []
+    assert published == []
 
 
 def test_rejects_unknown_fields(
-    client: TestClient, publisher: RecordingPublisher
+    client: TestClient, published: list[tuple[str, int]]
 ) -> None:
     response = client.post(
         "/analyze", json={"file_path": "clip.avi", "fps": 2, "extra": 1}
@@ -71,7 +84,7 @@ def test_rejects_unknown_fields(
 
 
 def test_missing_video_is_404(
-    client: TestClient, publisher: RecordingPublisher
+    client: TestClient, published: list[tuple[str, int]]
 ) -> None:
     response = client.post("/analyze", json={"file_path": "nope.mp4", "fps": 2})
     assert response.status_code == 404
@@ -79,15 +92,15 @@ def test_missing_video_is_404(
 
 @pytest.mark.parametrize("file_path", ["../../etc/passwd", "a\x00b", "x" * 5000])
 def test_bad_paths_are_400(
-    client: TestClient, publisher: RecordingPublisher, file_path: str
+    client: TestClient, published: list[tuple[str, int]], file_path: str
 ) -> None:
     response = client.post("/analyze", json={"file_path": file_path, "fps": 2})
     assert response.status_code == 400
-    assert publisher.published == []
+    assert published == []
 
 
 def test_unreadable_video_is_400(
-    client: TestClient, publisher: RecordingPublisher, tmp_path: Path
+    client: TestClient, published: list[tuple[str, int]], tmp_path: Path
 ) -> None:
     (tmp_path / "bogus.mp4").write_bytes(b"not a video")
     response = client.post("/analyze", json={"file_path": "bogus.mp4", "fps": 4})
