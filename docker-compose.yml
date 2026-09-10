@@ -18,9 +18,8 @@ services:
       - "8000:8000"
     environment:
       NATS_URL: nats://nats:4222
-      VIDEOS_DIR: /videos
     volumes:
-      - ./videos:/videos:ro
+      - ./videos:/app/videos:ro
     depends_on:
       nats:
         condition: service_healthy

@@ -1,4 +1,3 @@
-import asyncio
 import logging
 import os
 from collections.abc import AsyncIterator
@@ -10,7 +9,8 @@ import nats
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.responses import Response
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, generate_latest
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, field_validator
+from starlette.concurrency import iterate_in_threadpool
 
 from video_analyzer.frames import UnreadableVideoError, iter_frames
 from video_analyzer.publisher import STREAM, publish
@@ -18,7 +18,7 @@ from video_analyzer.publisher import STREAM, publish
 logging.basicConfig(level="INFO", format="%(levelname)s %(message)s")
 log = logging.getLogger("video_analyzer")
 
-VIDEOS_DIR = Path(os.environ.get("VIDEOS_DIR", "videos")).resolve()
+VIDEOS_DIR = Path("videos").resolve()
 NATS_URL = os.environ.get("NATS_URL", "nats://localhost:4222")
 
 FRAMES_DISPATCHED = Counter("frames_dispatched_total", "Frames published to the stream")
@@ -42,7 +42,7 @@ app = FastAPI(title="VideoAnalyzer", lifespan=lifespan)
 class AnalyzeRequest(BaseModel):
     model_config = ConfigDict(strict=True, extra="forbid")
 
-    file_path: str = Field(min_length=1)
+    file_path: str
     fps: int
 
     @field_validator("fps")
@@ -86,7 +86,7 @@ async def analyze(body: AnalyzeRequest, request: Request) -> AnalyzeResponse:
     dispatched = 0
     try:
         with closing(iter_frames(path, body.fps)) as frames:
-            while (frame := await asyncio.to_thread(next, frames, None)) is not None:
+            async for frame in iterate_in_threadpool(frames):
                 await publish(request.app.state.js, video_id, frame)
                 dispatched += 1
                 FRAMES_DISPATCHED.inc()

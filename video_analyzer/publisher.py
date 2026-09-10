@@ -11,7 +11,7 @@ SUBJECT = "frames"
 MAX_BACKLOG = int(os.environ.get("MAX_BACKLOG", "500"))
 MAX_WAIT_SECONDS = 60
 POLL_SECONDS = 0.05
-STREAM_FULL = 10077  # JetStream err_code when discard=new refuses a publish
+STREAM_FULL = 10077  # generic store-failed code; with only max_msgs set it means full
 
 STREAM = StreamConfig(
     name=SUBJECT,

@@ -1,7 +1,9 @@
 from pathlib import Path
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from fastapi.testclient import TestClient
+from nats.js.errors import BadRequestError
 
 from video_analyzer import main
 from video_analyzer.frames import Frame
@@ -114,28 +116,12 @@ def test_metrics_exposed(client: TestClient) -> None:
 def test_startup_updates_stream_when_config_changed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from nats.js.errors import BadRequestError
-
-    class FakeJetStream:
-        updated: list[object] = []
-
-        async def add_stream(self, config: object) -> None:
-            raise BadRequestError(err_code=10058)
-
-        async def update_stream(self, config: object) -> None:
-            self.updated.append(config)
-
-    class FakeConnection:
-        def jetstream(self) -> FakeJetStream:
-            return FakeJetStream()
-
-        async def drain(self) -> None:
-            pass
-
-    async def fake_connect(url: str) -> FakeConnection:
-        return FakeConnection()
-
-    monkeypatch.setattr(main.nats, "connect", fake_connect)
+    js = Mock(
+        add_stream=AsyncMock(side_effect=BadRequestError(err_code=10058)),
+        update_stream=AsyncMock(),
+    )
+    nc = Mock(drain=AsyncMock(), **{"jetstream.return_value": js})
+    monkeypatch.setattr(main.nats, "connect", AsyncMock(return_value=nc))
     with TestClient(main.app):
         pass
-    assert FakeJetStream.updated == [main.STREAM]
+    js.update_stream.assert_awaited_once_with(main.STREAM)

@@ -7,8 +7,6 @@ import cv2
 
 log = logging.getLogger("video_analyzer")
 
-JPEG_QUALITY = 75
-
 
 class UnreadableVideoError(Exception):
     pass
@@ -32,22 +30,17 @@ def iter_frames(path: Path, target_fps: int) -> Iterator[Frame]:
         # grab() alone tells EOF apart from a frame that fails to decode in retrieve()
         while capture.grab():
             if index >= sample * step:
-                frame = _encode(capture, index)
-                if frame is None:
+                sample += 1
+                ok, image = capture.retrieve()
+                if ok:
+                    _, buffer = cv2.imencode(
+                        ".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, 75]
+                    )
+                    yield Frame(index=index, jpeg=buffer.tobytes())
+                else:
                     log.warning(
                         "skipping undecodable frame=%d file=%s", index, path.name
                     )
-                else:
-                    yield frame
-                sample += 1
             index += 1
     finally:
         capture.release()
-
-
-def _encode(capture: cv2.VideoCapture, index: int) -> Frame | None:
-    ok, image = capture.retrieve()
-    if not ok:
-        return None
-    ok, buffer = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
-    return Frame(index=index, jpeg=buffer.tobytes()) if ok else None
