@@ -109,3 +109,33 @@ def test_metrics_exposed(client: TestClient) -> None:
     response = client.get("/metrics")
     assert response.status_code == 200
     assert "frames_dispatched_total" in response.text
+
+
+def test_startup_updates_stream_when_config_changed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from nats.js.errors import BadRequestError
+
+    class FakeJetStream:
+        updated: list[object] = []
+
+        async def add_stream(self, config: object) -> None:
+            raise BadRequestError(err_code=10058)
+
+        async def update_stream(self, config: object) -> None:
+            self.updated.append(config)
+
+    class FakeConnection:
+        def jetstream(self) -> FakeJetStream:
+            return FakeJetStream()
+
+        async def drain(self) -> None:
+            pass
+
+    async def fake_connect(url: str) -> FakeConnection:
+        return FakeConnection()
+
+    monkeypatch.setattr(main.nats, "connect", fake_connect)
+    with TestClient(main.app):
+        pass
+    assert FakeJetStream.updated == [main.STREAM]
