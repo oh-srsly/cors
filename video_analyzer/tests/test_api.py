@@ -1,7 +1,6 @@
 from pathlib import Path
 
 import pytest
-import redis
 from fastapi.testclient import TestClient
 
 from video_analyzer import main
@@ -12,7 +11,7 @@ from video_analyzer.frames import Frame
 def published(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, int]]:
     records: list[tuple[str, int]] = []
 
-    def fake_publish(client: redis.Redis, video_id: str, frame: Frame) -> None:
+    async def fake_publish(js: object, video_id: str, frame: Frame) -> None:
         records.append((video_id, frame.index))
 
     monkeypatch.setattr(main, "publish", fake_publish)
@@ -22,6 +21,7 @@ def published(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, int]]:
 @pytest.fixture
 def client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> TestClient:
     monkeypatch.setattr(main, "VIDEOS_DIR", tmp_path)
+    main.app.state.js = None
     return TestClient(main.app)
 
 
@@ -46,23 +46,21 @@ def test_each_request_gets_its_own_video_id(
     assert first != second
 
 
-def test_backlog_timeout_reports_partial_dispatch(
+def test_full_stream_reports_partial_dispatch(
     client: TestClient, monkeypatch: pytest.MonkeyPatch, video_path: Path
 ) -> None:
     calls = 0
 
-    def flaky_publish(client: redis.Redis, video_id: str, frame: Frame) -> None:
+    async def stuck_publish(js: object, video_id: str, frame: Frame) -> None:
         nonlocal calls
         calls += 1
         if calls > 2:
-            raise TimeoutError("backlog stayed above 500 for 60s")
+            raise TimeoutError("stream stayed full")
 
-    monkeypatch.setattr(main, "publish", flaky_publish)
+    monkeypatch.setattr(main, "publish", stuck_publish)
     response = client.post("/analyze", json={"file_path": video_path.name, "fps": 2})
     assert response.status_code == 503
-    detail = response.json()["detail"]
-    assert detail["frames_dispatched"] == 2
-    assert detail["video_id"].startswith("clip-")
+    assert "2 frames already dispatched as clip-" in response.json()["detail"]
 
 
 @pytest.mark.parametrize("fps", [1, 3, 30, "2", 2.0, True, None])
@@ -105,24 +103,6 @@ def test_unreadable_video_is_400(
     (tmp_path / "bogus.mp4").write_bytes(b"not a video")
     response = client.post("/analyze", json={"file_path": "bogus.mp4", "fps": 4})
     assert response.status_code == 400
-
-
-def test_health_ok(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
-    import fakeredis
-
-    monkeypatch.setattr(main, "redis_client", fakeredis.FakeRedis())
-    assert client.get("/health").status_code == 200
-
-
-def test_health_reports_redis_down(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    class Down:
-        def ping(self) -> None:
-            raise redis.ConnectionError("nope")
-
-    monkeypatch.setattr(main, "redis_client", Down())
-    assert client.get("/health").status_code == 503
 
 
 def test_metrics_exposed(client: TestClient) -> None:

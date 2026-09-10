@@ -1,37 +1,37 @@
+import asyncio
 import os
-import time
 
-import redis
-from prometheus_client import Counter
+from nats.js import JetStreamContext
+from nats.js.api import DiscardPolicy, RetentionPolicy, StreamConfig
+from nats.js.errors import APIError
 
 from video_analyzer.frames import Frame
 
-STREAM = "frames"
+SUBJECT = "frames"
 MAX_BACKLOG = int(os.environ.get("MAX_BACKLOG", "500"))
 MAX_WAIT_SECONDS = 60
 POLL_SECONDS = 0.05
+STREAM_FULL = 10077  # JetStream err_code when discard=new refuses a publish
 
-BACKLOG_WAIT_SECONDS = Counter(
-    "backlog_wait_seconds_total", "Time spent waiting on backlog"
+STREAM = StreamConfig(
+    name=SUBJECT,
+    subjects=[SUBJECT],
+    max_msgs=MAX_BACKLOG,
+    discard=DiscardPolicy.NEW,
+    retention=RetentionPolicy.WORK_QUEUE,
 )
 
 
-def publish(client: redis.Redis, video_id: str, frame: Frame) -> None:
-    pipe = client.pipeline(transaction=False)
-    pipe.xadd(
-        STREAM, {"video_id": video_id, "frame_id": frame.index, "jpeg": frame.jpeg}
-    )
-    pipe.xlen(STREAM)
-    _, backlog = pipe.execute()
-    if backlog >= MAX_BACKLOG:
-        wait_for_capacity(client)
-
-
-def wait_for_capacity(client: redis.Redis) -> None:
+async def publish(js: JetStreamContext, video_id: str, frame: Frame) -> None:
+    headers = {"video_id": video_id, "frame_id": str(frame.index)}
     for _ in range(int(MAX_WAIT_SECONDS / POLL_SECONDS)):
-        # consumers delete entries once processed, so length == unprocessed backlog
-        if client.xlen(STREAM) < MAX_BACKLOG:
+        try:
+            await js.publish(SUBJECT, frame.jpeg, headers=headers)
             return
-        time.sleep(POLL_SECONDS)
-        BACKLOG_WAIT_SECONDS.inc(POLL_SECONDS)
-    raise TimeoutError(f"backlog stayed above {MAX_BACKLOG} for {MAX_WAIT_SECONDS}s")
+        except APIError as exc:
+            if exc.err_code != STREAM_FULL:
+                raise
+            await asyncio.sleep(POLL_SECONDS)
+    raise TimeoutError(
+        f"stream stayed full at {MAX_BACKLOG} frames for {MAX_WAIT_SECONDS}s"
+    )

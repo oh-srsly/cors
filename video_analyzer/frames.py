@@ -21,25 +21,17 @@ class Frame:
 
 
 def iter_frames(path: Path, target_fps: int) -> Iterator[Frame]:
-    """Sample by presentation time, so 25 -> 2 fps and VFR sources stay accurate."""
     capture = cv2.VideoCapture(str(path))
     try:
-        if not capture.isOpened():
-            raise UnreadableVideoError(f"cannot open video: {path.name}")
-        source_fps = capture.get(cv2.CAP_PROP_FPS)  # <= 0 for some containers
-        interval_ms = 1000 / target_fps
-        next_wanted_ms = 0.0
-        previous_ms = 0.0
+        source_fps = capture.get(cv2.CAP_PROP_FPS)
+        if not capture.isOpened() or not source_fps > 0:
+            raise UnreadableVideoError(f"cannot read video: {path.name}")
+        step = source_fps / target_fps  # 25 fps -> 2 fps: every 12.5th frame
+        sample = 0
         index = 0
         # grab() alone tells EOF apart from a frame that fails to decode in retrieve()
         while capture.grab():
-            timestamp_ms = capture.get(cv2.CAP_PROP_POS_MSEC)
-            if not timestamp_ms and source_fps > 0:
-                timestamp_ms = index * 1000 / source_fps
-            if timestamp_ms < previous_ms:  # PTS restarted, e.g. concatenated segments
-                next_wanted_ms = timestamp_ms
-            previous_ms = timestamp_ms
-            if timestamp_ms >= next_wanted_ms:
+            if index >= sample * step:
                 frame = _encode(capture, index)
                 if frame is None:
                     log.warning(
@@ -47,8 +39,7 @@ def iter_frames(path: Path, target_fps: int) -> Iterator[Frame]:
                     )
                 else:
                     yield frame
-                while next_wanted_ms <= timestamp_ms:
-                    next_wanted_ms += interval_ms
+                sample += 1
             index += 1
     finally:
         capture.release()

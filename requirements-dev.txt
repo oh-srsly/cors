@@ -1,6 +1,5 @@
 -r video_analyzer/requirements.txt
 -r stream_detector/requirements.txt
 pytest==9.1.1
-fakeredis==2.38.0
 httpx==0.28.1
 ruff==0.16.6

@@ -34,7 +34,9 @@ class HaarFaceDetector(StreamFaceDetector):
 
     def detect_faces(self, frame: np.ndarray) -> list[BoundingBox]:
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        boxes = self._cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5)
+        boxes = self._cascade.detectMultiScale(
+            gray, scaleFactor=1.1, minNeighbors=5, minSize=(40, 40)
+        )
         return [BoundingBox(x=x, y=y, w=w, h=h) for x, y, w, h in boxes]
 
 

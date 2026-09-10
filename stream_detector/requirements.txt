@@ -1,5 +1,5 @@
 pydantic==2.13.5
-redis==8.1.0
+nats-py==2.15.0
 opencv-python-headless==4.14.0.94
 numpy==2.5.3
 prometheus-client==0.26.0

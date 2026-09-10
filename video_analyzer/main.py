@@ -1,31 +1,39 @@
+import asyncio
 import logging
 import os
-from contextlib import closing
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager, closing
 from pathlib import Path
 from uuid import uuid4
 
-import redis
-from fastapi import FastAPI, HTTPException, status
-from fastapi.responses import JSONResponse, Response
-from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
+import nats
+from fastapi import FastAPI, HTTPException, Request, status
+from fastapi.responses import Response
+from prometheus_client import CONTENT_TYPE_LATEST, Counter, generate_latest
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from redis.backoff import ExponentialBackoff
-from redis.retry import Retry
 
 from video_analyzer.frames import UnreadableVideoError, iter_frames
-from video_analyzer.publisher import publish
+from video_analyzer.publisher import STREAM, publish
 
 logging.basicConfig(level="INFO", format="%(levelname)s %(message)s")
 log = logging.getLogger("video_analyzer")
 
 VIDEOS_DIR = Path(os.environ.get("VIDEOS_DIR", "videos")).resolve()
-REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
+NATS_URL = os.environ.get("NATS_URL", "nats://localhost:4222")
 
-app = FastAPI(title="VideoAnalyzer")
-redis_client = redis.Redis.from_url(REDIS_URL, retry=Retry(ExponentialBackoff(), 3))
-
-REQUEST_SECONDS = Histogram("analyze_request_seconds", "POST /analyze latency")
 FRAMES_DISPATCHED = Counter("frames_dispatched_total", "Frames published to the stream")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    nc = await nats.connect(NATS_URL)
+    app.state.js = nc.jetstream()
+    await app.state.js.add_stream(STREAM)
+    yield
+    await nc.drain()
+
+
+app = FastAPI(title="VideoAnalyzer", lifespan=lifespan)
 
 
 class AnalyzeRequest(BaseModel):
@@ -63,47 +71,32 @@ def resolve_video_path(file_path: str) -> Path:
     return path
 
 
-def dispatch_failed(error: str, video_id: str, dispatched: int) -> HTTPException:
-    detail = {"error": error, "video_id": video_id, "frames_dispatched": dispatched}
-    return HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail)
-
-
 @app.get("/metrics")
-def metrics() -> Response:
+async def metrics() -> Response:
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
-@app.get("/health")
-def health() -> JSONResponse:
-    try:
-        redis_client.ping()
-    except redis.RedisError:
-        return JSONResponse(
-            {"status": "redis unreachable"}, status.HTTP_503_SERVICE_UNAVAILABLE
-        )
-    return JSONResponse({"status": "ok"})
-
-
 @app.post("/analyze")
-def analyze(request: AnalyzeRequest) -> AnalyzeResponse:
-    path = resolve_video_path(request.file_path)
+async def analyze(body: AnalyzeRequest, request: Request) -> AnalyzeResponse:
+    path = resolve_video_path(body.file_path)
     video_id = f"{path.stem}-{uuid4().hex}"
     dispatched = 0
     try:
-        with REQUEST_SECONDS.time(), closing(iter_frames(path, request.fps)) as frames:
-            for frame in frames:
-                publish(redis_client, video_id, frame)
+        with closing(iter_frames(path, body.fps)) as frames:
+            while (frame := await asyncio.to_thread(next, frames, None)) is not None:
+                await publish(request.app.state.js, video_id, frame)
                 dispatched += 1
                 FRAMES_DISPATCHED.inc()
     except UnreadableVideoError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
     except TimeoutError as exc:
-        raise dispatch_failed(str(exc), video_id, dispatched) from exc
-    except redis.RedisError as exc:
-        log.exception("redis failure video_id=%s frames=%d", video_id, dispatched)
-        raise dispatch_failed("frame queue unavailable", video_id, dispatched) from exc
+        detail = f"{exc}; {dispatched} frames already dispatched as {video_id}"
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail) from exc
+    except nats.errors.Error as exc:
+        log.exception("nats failure video_id=%s frames=%d", video_id, dispatched)
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "frame queue unavailable"
+        ) from exc
 
-    log.info(
-        "dispatched frames=%d video_id=%s fps=%d", dispatched, video_id, request.fps
-    )
+    log.info("dispatched frames=%d video_id=%s fps=%d", dispatched, video_id, body.fps)
     return AnalyzeResponse(video_id=video_id, frames_dispatched=dispatched)

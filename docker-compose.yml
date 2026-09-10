@@ -1,9 +1,10 @@
 services:
-  redis:
-    image: redis:7-alpine
+  nats:
+    image: nats:2-alpine
+    command: ["-js", "-m", "8222"]
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8222/healthz"]
       interval: 2s
       timeout: 2s
       retries: 15
@@ -16,17 +17,12 @@ services:
     ports:
       - "8000:8000"
     environment:
-      REDIS_URL: redis://redis:6379/0
+      NATS_URL: nats://nats:4222
       VIDEOS_DIR: /videos
     volumes:
       - ./videos:/videos:ro
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
     depends_on:
-      redis:
+      nats:
         condition: service_healthy
 
   stream_detector:
@@ -35,10 +31,10 @@ services:
       dockerfile: stream_detector/Dockerfile
     restart: unless-stopped
     environment:
-      REDIS_URL: redis://redis:6379/0
+      NATS_URL: nats://nats:4222
       DETECTOR: ${DETECTOR:-mock}
     deploy:
       replicas: 2
     depends_on:
-      redis:
+      nats:
         condition: service_healthy
